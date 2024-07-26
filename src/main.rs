@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 use std::thread::sleep;
@@ -39,24 +40,29 @@ fn main() -> Result<(), Error> {
         return Err(Error::new("provide filepath and command"));
     }
     let filepath = &args[1];
-    let command = &args[2];
+    let cmd = &args[2];
     if !Path::new(filepath).exists() {
         return Err(Error::new("file does not exist"));
     }
+    exec(cmd)?;
     let mut last_modified_time = metadata_modified(filepath)?;
-    println!("watching");
     loop {
         sleep(Duration::from_millis(1));
         let time = metadata_modified(filepath)?;
         if time > last_modified_time {
-            print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
-            let output = Command::new("sh")
-                .arg("-c")
-                .arg(command)
-                .output()
-                .map_err(|err| Error::new(format!("failed to execute command {err}")))?;
-            println!("{}", String::from_utf8_lossy(&output.stdout));
+            print!("{esc}[2J{esc}[1;1H", esc = 27 as char); // clear the screen
+            exec(cmd)?;
             last_modified_time = time;
         }
     }
+}
+
+fn exec(cmd: impl AsRef<OsStr>) -> Result<(), Error> {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .map_err(|err| Error::new(format!("failed to execute command {err}")))?;
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    Ok(())
 }
