@@ -51,35 +51,36 @@ fn main() -> Result<(), Error> {
         return Err(Error::new("try `watcher 'file1 file2' 'cmd'`"));
     }
     let paths: Vec<&str> = args[1].split_whitespace().collect();
-    let cmd = &args[2];
+    let cmd = args[2].clone();
     for path in &paths {
         if !Path::new(path).exists() {
             return Err(Error::new(format!("file does not exist at {path}")));
         }
     }
+    exec(&cmd)?;
     let (tx, rx) = mpsc::channel();
     let rx = Arc::new(Mutex::new(rx));
     thread::spawn(move || {
-        println!("thread init");
+        let mut i = 0;
         let rx = rx.clone();
-        while let Ok(x) = rx.lock().unwrap().recv() {
-            println!("x={x}");
+        while let Ok(_) = rx.lock().expect("failed to lock").recv() {
+            println!("i={i}");
+            i += 1;
+            if exec(&cmd).is_err() {
+                break;
+            }
         }
-        println!("recv not ok");
     });
-    exec(cmd)?;
     let mut prev_hash = hash(&paths)?;
-    let mut i = 0;
     loop {
         sleep(Duration::from_millis(100));
         let tx = tx.clone();
         let last_hash = hash(&paths)?;
         if prev_hash != last_hash {
             print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
-            exec(cmd)?;
-            dbg!(i);
-            tx.send(i).unwrap();
-            i += 1;
+            if let Err(err) = tx.send(()) {
+                return Err(Error::new(format!("failed to send: '{err}'")));
+            }
         }
         prev_hash = last_hash;
     }
