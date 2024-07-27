@@ -3,7 +3,8 @@ use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::process::Command;
-use std::thread::sleep;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread::{self, sleep};
 use std::time::{Duration, SystemTime};
 use std::{error, fmt, fs};
 
@@ -56,20 +57,33 @@ fn main() -> Result<(), Error> {
             return Err(Error::new(format!("file does not exist at {path}")));
         }
     }
+    let (tx, rx) = mpsc::channel();
+    let rx = Arc::new(Mutex::new(rx));
+    thread::spawn(move || {
+        println!("thread init");
+        let rx = rx.clone();
+        while let Ok(x) = rx.lock().unwrap().recv() {
+            println!("x={x}");
+        }
+        println!("recv not ok");
+    });
     exec(cmd)?;
     let mut prev_hash = hash(&paths)?;
     let mut i = 0;
     loop {
         sleep(Duration::from_millis(100));
+        let tx = tx.clone();
         let last_hash = hash(&paths)?;
         if prev_hash != last_hash {
             print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
             exec(cmd)?;
             dbg!(i);
+            tx.send(i).unwrap();
             i += 1;
         }
         prev_hash = last_hash;
     }
+    // println!("after the loop");
 }
 
 fn exec(cmd: impl AsRef<OsStr>) -> Result<(), Error> {
