@@ -3,11 +3,11 @@ use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, sleep};
 use std::time::{Duration, SystemTime};
 use std::{error, fmt, fs};
+use tokio::task::AbortHandle;
 use tokio::time;
 
 struct Error(String);
@@ -81,14 +81,7 @@ async fn main() -> Result<(), Error> {
     }
     let (tx, rx) = mpsc::channel();
     let rx = Arc::new(Mutex::new(rx));
-    let h = tokio::spawn(async {
-        println!("started");
-        time::sleep(time::Duration::from_secs(3)).await;
-        println!("ended");
-    });
-    let abort = h.abort_handle();
-    let mut handle: Option<tokio::task::JoinHandle<()>> = Some(h);
-    let is_running = Arc::new(AtomicBool::new(true));
+    let mut task_handle: Option<tokio::task::JoinHandle<()>> = None;
     // thread::spawn(move || {
     //     let mut i = 0;
     //     let rx = rx.clone();
@@ -102,6 +95,7 @@ async fn main() -> Result<(), Error> {
     // });
     let mut prev_hash = hash(&paths)?;
     let mut i = 0;
+    let mut abort_handle: Option<AbortHandle> = None;
     loop {
         println!("loop");
         sleep(Duration::from_millis(500));
@@ -114,30 +108,38 @@ async fn main() -> Result<(), Error> {
             print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
             println!("i={i}");
             i += 1;
-            if let Some(handle) = handle.take() {
-                println!("joining");
-                is_running.store(false, Ordering::Relaxed);
+            if let Some(handle) = task_handle.take() {
+                if let Some(abort) = abort_handle.as_ref() {
+                    abort.abort();
+                }
+
+                // is_running.store(false, Ordering::Relaxed);
                 // handle.join().expect("failed to join handle");
             }
+
+            let h = tokio::spawn(async {
+                println!("started");
+                time::sleep(time::Duration::from_secs(3)).await;
+                println!("ended");
+            });
+            abort_handle = Some(h.abort_handle());
+            task_handle = Some(h);
+
             println!("before jh");
-            is_running.store(true, Ordering::Relaxed);
             println!("restarted is running");
-            let is_running = is_running.clone();
             let jh = thread::spawn(move || {
                 println!("SPAWN");
-                if is_running.load(Ordering::Relaxed) {
-                    println!("is running");
-                    if let Ok(_) = rx.lock().expect("failed to lock rx").recv()
-                    // cmd.lock().expect("failed to lock cmd").clone(),
-                    {
-                        if exec(&*cmd.lock().expect("failed to lock cmd")).is_err() {
-                            return;
-                        }
-                        println!("Task executed");
-                        // if exec(&cmd).is_err() {
-                        //     break;
-                        // }
+                println!("is running");
+                if let Ok(_) = rx.lock().expect("failed to lock rx").recv()
+                // cmd.lock().expect("failed to lock cmd").clone(),
+                {
+                    if exec(&*cmd.lock().expect("failed to lock cmd")).is_err() {
+                        return;
                     }
+                    println!("Task executed");
+                    // if exec(&cmd).is_err() {
+                    //     break;
+                    // }
                 }
                 println!("after `while is_running`");
                 // let cmd = cmd.clone();
