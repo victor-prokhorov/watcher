@@ -1,4 +1,6 @@
+use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsStr;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::process::Command;
 use std::thread::sleep;
@@ -27,33 +29,46 @@ impl fmt::Debug for Error {
 
 impl error::Error for Error {}
 
-fn metadata_modified(filepath: &str) -> Result<SystemTime, Error> {
+fn last_modified(filepath: &str) -> Result<SystemTime, Error> {
     fs::metadata(filepath)
-        .map_err(|err| Error::new(format!("failed to read metadata from file {err}")))?
+        .map_err(|err| {
+            Error::new(format!(
+                "failed to read metadata from file at {filepath}: '{err}'"
+            ))
+        })?
         .modified()
-        .map_err(|err| Error::new(format!("failed to read modified time from metadata {err}",)))
+        .map_err(|err| {
+            Error::new(format!(
+                "failed to read modified time from metadata at {filepath}: '{err}'",
+            ))
+        })
 }
 
 fn main() -> Result<(), Error> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 {
-        return Err(Error::new("provide filepath and command"));
+        return Err(Error::new("try `watcher 'file1 file2' 'cmd'`"));
     }
-    let filepath = &args[1];
+    let paths: Vec<&str> = args[1].split_whitespace().collect();
     let cmd = &args[2];
-    if !Path::new(filepath).exists() {
-        return Err(Error::new("file does not exist"));
+    for path in &paths {
+        if !Path::new(path).exists() {
+            return Err(Error::new(format!("file does not exist at {path}")));
+        }
     }
     exec(cmd)?;
-    let mut last_modified_time = metadata_modified(filepath)?;
+    let mut prev_hash = hash(&paths)?;
+    let mut i = 0;
     loop {
-        sleep(Duration::from_millis(1));
-        let time = metadata_modified(filepath)?;
-        if time > last_modified_time {
-            print!("{esc}[2J{esc}[1;1H", esc = 27 as char); // clear the screen
+        sleep(Duration::from_millis(100));
+        let last_hash = hash(&paths)?;
+        if prev_hash != last_hash {
+            print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
             exec(cmd)?;
-            last_modified_time = time;
+            dbg!(i);
+            i += 1;
         }
+        prev_hash = last_hash;
     }
 }
 
@@ -62,7 +77,15 @@ fn exec(cmd: impl AsRef<OsStr>) -> Result<(), Error> {
         .arg("-c")
         .arg(cmd)
         .output()
-        .map_err(|err| Error::new(format!("failed to execute command {err}")))?;
+        .map_err(|err| Error::new(format!("failed to execute command '{err}'")))?;
     println!("{}", String::from_utf8_lossy(&output.stdout));
     Ok(())
+}
+
+fn hash(paths: &[&str]) -> Result<u64, Error> {
+    let mut hasher = DefaultHasher::new();
+    for path in paths {
+        last_modified(path)?.hash(&mut hasher);
+    }
+    Ok(hasher.finish())
 }
