@@ -3,8 +3,9 @@ use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::thread::{self, sleep};
+use std::thread::{self, sleep, JoinHandle};
 use std::time::{Duration, SystemTime};
 use std::{error, fmt, fs};
 
@@ -45,48 +46,6 @@ fn last_modified(filepath: &str) -> Result<SystemTime, Error> {
         })
 }
 
-fn main() -> Result<(), Error> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 3 {
-        return Err(Error::new("try `watcher 'file1 file2' 'cmd'`"));
-    }
-    let paths: Vec<&str> = args[1].split_whitespace().collect();
-    let cmd = args[2].clone();
-    for path in &paths {
-        if !Path::new(path).exists() {
-            return Err(Error::new(format!("file does not exist at {path}")));
-        }
-    }
-    exec(&cmd)?;
-    let (tx, rx) = mpsc::channel();
-    let rx = Arc::new(Mutex::new(rx));
-    thread::spawn(move || {
-        let mut i = 0;
-        let rx = rx.clone();
-        while let Ok(_) = rx.lock().expect("failed to lock").recv() {
-            println!("i={i}");
-            i += 1;
-            if exec(&cmd).is_err() {
-                break;
-            }
-        }
-    });
-    let mut prev_hash = hash(&paths)?;
-    loop {
-        sleep(Duration::from_millis(100));
-        let tx = tx.clone();
-        let last_hash = hash(&paths)?;
-        if prev_hash != last_hash {
-            print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
-            if let Err(err) = tx.send(()) {
-                return Err(Error::new(format!("failed to send: '{err}'")));
-            }
-        }
-        prev_hash = last_hash;
-    }
-    // println!("after the loop");
-}
-
 fn exec(cmd: impl AsRef<OsStr>) -> Result<(), Error> {
     let output = Command::new("sh")
         .arg("-c")
@@ -103,4 +62,80 @@ fn hash(paths: &[&str]) -> Result<u64, Error> {
         last_modified(path)?.hash(&mut hasher);
     }
     Ok(hasher.finish())
+}
+
+fn main() -> Result<(), Error> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 3 {
+        return Err(Error::new("try `watcher 'file1 file2' 'cmd'`"));
+    }
+    let paths: Vec<&str> = args[1].split_whitespace().collect();
+    let cmd = args[2].clone();
+    let cmd = Arc::new(Mutex::new(cmd));
+    for path in &paths {
+        if !Path::new(path).exists() {
+            return Err(Error::new(format!("file does not exist at {path}")));
+        }
+    }
+    let (tx, rx) = mpsc::channel();
+    let rx = Arc::new(Mutex::new(rx));
+    let mut handle: Option<JoinHandle<()>> = None;
+    let is_running = Arc::new(AtomicBool::new(true));
+    // thread::spawn(move || {
+    //     let mut i = 0;
+    //     let rx = rx.clone();
+    //     while let Ok(_) = rx.lock().expect("failed to lock").recv() {
+    //         println!("i={i}");
+    //         i += 1;
+    //         if exec(&cmd).is_err() {
+    //             break;
+    //         }
+    //     }
+    // });
+    let mut prev_hash = hash(&paths)?;
+    let mut i = 0;
+    loop {
+        sleep(Duration::from_millis(100));
+        let tx = tx.clone();
+        let rx = rx.clone();
+        let last_hash = hash(&paths)?;
+        if prev_hash != last_hash {
+            print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
+            println!("!=");
+            if let Some(handle) = handle.take() {
+                println!("joining");
+                is_running.store(false, Ordering::Relaxed);
+                handle.join().expect("failed to join handle");
+            }
+            println!("before jh");
+            is_running.store(true, Ordering::Relaxed);
+            println!("restarted is running");
+            let is_running = is_running.clone();
+            let jh = thread::spawn(move || {
+                println!("SPAWN");
+                while is_running.load(Ordering::Relaxed) {
+                    println!("is running");
+                    while let Ok(_) = rx.lock().expect("failed to lock rx").recv()
+                    // cmd.lock().expect("failed to lock cmd").clone(),
+                    {
+                        println!("i={i}");
+                        i += 1;
+                        // if exec(&cmd).is_err() {
+                        //     break;
+                        // }
+                    }
+                }
+                println!("after `while is_running`");
+                // let cmd = cmd.clone();
+            });
+            handle = Some(jh);
+            println!("after jh");
+            if let Err(err) = tx.send(()) {
+                return Err(Error::new(format!("failed to send: '{err}'")));
+            }
+            println!("end");
+        }
+        prev_hash = last_hash;
+    }
+    // println!("after the loop");
 }
