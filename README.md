@@ -5,8 +5,8 @@ super simple file watcher
 ## examples
 
 ```sh
-watcher README.md 'cat README.md'
-watcher impl.mips 'java -jar $HOME/bin/Mars45.jar nc runner.mips impl.mips'
+watcher 'README.md src/main.rs' 'cat README.md'
+watcher 'impl.mips runner.mips' 'java -jar $HOME/bin/Mars45.jar nc runner.mips impl.mips'
 ```
 
 ## installation

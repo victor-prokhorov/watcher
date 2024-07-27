@@ -1,14 +1,13 @@
 use std::collections::hash_map::DefaultHasher;
-use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::process::Command;
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread::{self, sleep};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::{error, fmt, fs};
+use tokio::process::Command;
+use tokio::sync::Mutex;
 use tokio::task::AbortHandle;
-use tokio::time;
+use tokio::time::sleep;
 
 struct Error(String);
 
@@ -47,11 +46,13 @@ fn last_modified(filepath: &str) -> Result<SystemTime, Error> {
         })
 }
 
-fn exec(cmd: impl AsRef<OsStr>) -> Result<(), Error> {
+async fn exec(cmd: String) -> Result<(), Error> {
+    print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
     let output = Command::new("sh")
         .arg("-c")
         .arg(cmd)
         .output()
+        .await
         .map_err(|err| Error::new(format!("failed to execute command '{err}'")))?;
     println!("{}", String::from_utf8_lossy(&output.stdout));
     Ok(())
@@ -79,79 +80,28 @@ async fn main() -> Result<(), Error> {
             return Err(Error::new(format!("file does not exist at {path}")));
         }
     }
-    let (tx, rx) = mpsc::channel();
-    let rx = Arc::new(Mutex::new(rx));
     let mut task_handle: Option<tokio::task::JoinHandle<()>> = None;
-    // thread::spawn(move || {
-    //     let mut i = 0;
-    //     let rx = rx.clone();
-    //     while let Ok(_) = rx.lock().expect("failed to lock").recv() {
-    //         println!("i={i}");
-    //         i += 1;
-    //         if exec(&cmd).is_err() {
-    //             break;
-    //         }
-    //     }
-    // });
     let mut prev_hash = hash(&paths)?;
-    let mut i = 0;
     let mut abort_handle: Option<AbortHandle> = None;
     loop {
-        println!("loop");
-        sleep(Duration::from_millis(500));
-        // abort.abort();
-        let tx = tx.clone();
-        let rx = rx.clone();
+        sleep(Duration::from_millis(100)).await;
         let cmd = cmd.clone();
         let last_hash = hash(&paths)?;
         if prev_hash != last_hash {
-            print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
-            println!("i={i}");
-            i += 1;
-            if let Some(handle) = task_handle.take() {
-                if let Some(abort) = abort_handle.as_ref() {
+            if let Some(_) = task_handle.take() {
+                if let Some(abort) = abort_handle.take() {
                     abort.abort();
                 }
-
-                // is_running.store(false, Ordering::Relaxed);
-                // handle.join().expect("failed to join handle");
             }
-
-            let h = tokio::spawn(async {
-                println!("started");
-                time::sleep(time::Duration::from_secs(3)).await;
-                println!("ended");
-            });
-            abort_handle = Some(h.abort_handle());
-            task_handle = Some(h);
-
-            println!("before jh");
-            println!("restarted is running");
-            let jh = thread::spawn(move || {
-                println!("SPAWN");
-                println!("is running");
-                if let Ok(_) = rx.lock().expect("failed to lock rx").recv()
-                // cmd.lock().expect("failed to lock cmd").clone(),
-                {
-                    if exec(&*cmd.lock().expect("failed to lock cmd")).is_err() {
-                        return;
-                    }
-                    println!("Task executed");
-                    // if exec(&cmd).is_err() {
-                    //     break;
-                    // }
+            let join_handle = tokio::spawn(async move {
+                let lock = cmd.lock().await;
+                if let Err(err) = exec(lock.clone()).await {
+                    println!("failed to execute command: '{err:?}'");
                 }
-                println!("after `while is_running`");
-                // let cmd = cmd.clone();
             });
-            // handle = Some(jh);
-            println!("after jh");
-            if let Err(err) = tx.send(()) {
-                return Err(Error::new(format!("failed to send: '{err}'")));
-            }
-            println!("end");
+            abort_handle = Some(join_handle.abort_handle());
+            task_handle = Some(join_handle);
         }
         prev_hash = last_hash;
     }
-    // println!("after the loop");
 }
