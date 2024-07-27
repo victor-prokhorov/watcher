@@ -5,9 +5,10 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::thread::{self, sleep, JoinHandle};
+use std::thread::{self, sleep};
 use std::time::{Duration, SystemTime};
 use std::{error, fmt, fs};
+use tokio::time;
 
 struct Error(String);
 
@@ -64,7 +65,8 @@ fn hash(paths: &[&str]) -> Result<u64, Error> {
     Ok(hasher.finish())
 }
 
-fn main() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 {
         return Err(Error::new("try `watcher 'file1 file2' 'cmd'`"));
@@ -79,7 +81,13 @@ fn main() -> Result<(), Error> {
     }
     let (tx, rx) = mpsc::channel();
     let rx = Arc::new(Mutex::new(rx));
-    let mut handle: Option<JoinHandle<()>> = None;
+    let h = tokio::spawn(async {
+        println!("started");
+        time::sleep(time::Duration::from_secs(3)).await;
+        println!("ended");
+    });
+    let abort = h.abort_handle();
+    let mut handle: Option<tokio::task::JoinHandle<()>> = Some(h);
     let is_running = Arc::new(AtomicBool::new(true));
     // thread::spawn(move || {
     //     let mut i = 0;
@@ -95,17 +103,21 @@ fn main() -> Result<(), Error> {
     let mut prev_hash = hash(&paths)?;
     let mut i = 0;
     loop {
-        sleep(Duration::from_millis(100));
+        println!("loop");
+        sleep(Duration::from_millis(500));
+        // abort.abort();
         let tx = tx.clone();
         let rx = rx.clone();
+        let cmd = cmd.clone();
         let last_hash = hash(&paths)?;
         if prev_hash != last_hash {
             print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
-            println!("!=");
+            println!("i={i}");
+            i += 1;
             if let Some(handle) = handle.take() {
                 println!("joining");
                 is_running.store(false, Ordering::Relaxed);
-                handle.join().expect("failed to join handle");
+                // handle.join().expect("failed to join handle");
             }
             println!("before jh");
             is_running.store(true, Ordering::Relaxed);
@@ -113,13 +125,15 @@ fn main() -> Result<(), Error> {
             let is_running = is_running.clone();
             let jh = thread::spawn(move || {
                 println!("SPAWN");
-                while is_running.load(Ordering::Relaxed) {
+                if is_running.load(Ordering::Relaxed) {
                     println!("is running");
-                    while let Ok(_) = rx.lock().expect("failed to lock rx").recv()
+                    if let Ok(_) = rx.lock().expect("failed to lock rx").recv()
                     // cmd.lock().expect("failed to lock cmd").clone(),
                     {
-                        println!("i={i}");
-                        i += 1;
+                        if exec(&*cmd.lock().expect("failed to lock cmd")).is_err() {
+                            return;
+                        }
+                        println!("Task executed");
                         // if exec(&cmd).is_err() {
                         //     break;
                         // }
@@ -128,7 +142,7 @@ fn main() -> Result<(), Error> {
                 println!("after `while is_running`");
                 // let cmd = cmd.clone();
             });
-            handle = Some(jh);
+            // handle = Some(jh);
             println!("after jh");
             if let Err(err) = tx.send(()) {
                 return Err(Error::new(format!("failed to send: '{err}'")));
